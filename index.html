@@ -318,6 +318,18 @@ main{max-width:680px;margin:0 auto;padding:14px;}
   position:absolute;top:0;left:60%;width:2px;height:100%;background:var(--navy);opacity:.6;
 }
 .rs-note{font-size:11px;color:var(--ink-soft);line-height:1.65;margin:8px 0 0;}
+
+/* ===== バックアップ ===== */
+.bk-info{
+  font-size:11.5px;color:var(--ink-soft);background:#f1f3f5;border-radius:8px;
+  padding:8px 10px;line-height:1.7;margin:0 0 10px;
+}
+.bk-note{font-size:11px;color:var(--ink-soft);line-height:1.7;margin:10px 0 0;}
+.bk-note strong{color:var(--navy);}
+.bk-warn{
+  font-size:11.5px;line-height:1.7;background:#fff3cd;border:1px solid #ffe69c;
+  border-radius:8px;padding:9px 11px;margin:10px 0 0;color:#664d03;
+}
 .result-time{font-size:12px;color:var(--ink-soft);margin-top:8px;}
 
 .review-item{border-bottom:1px solid var(--line);}
@@ -624,7 +636,7 @@ mark.hl-yellow,mark.hl-red,mark.hl-blue{cursor:pointer;}
   width:100%;
   box-shadow:0 8px 30px rgba(0,0,0,.25);
 }
-.confirm-box p{
+.confirm-box p{white-space:pre-line;
   font-size:14px;
   color:var(--ink);
   margin:0 0 16px;
@@ -866,6 +878,23 @@ h3.subtitle{font-size:13px;color:var(--ink-soft);margin:18px 0 8px;font-weight:7
       <button class="btn btn-ghost" id="startUnseen">未回答を優先</button>
     </div>
   </div>
+
+  <div class="section-block">
+    <h2>💾 学習記録のバックアップ</h2>
+    <div class="bk-info" id="backupInfo"></div>
+    <div class="btn-row">
+      <button class="btn btn-outline-amber" id="backupExport">⬇ 書き出す</button>
+      <button class="btn btn-ghost" id="backupImport">⬆ 復元する</button>
+    </div>
+    <input type="file" id="backupFileInput" accept="application/json,.json" style="display:none;">
+    <a id="backupDownloadAnchor" style="display:none;"></a>
+    <div class="bk-warn" id="backupStorageWarn" style="display:none;"></div>
+    <p class="bk-note">
+      学習記録はこのブラウザ内に保存されます。<strong>長期間アプリを開かないと、ブラウザの仕様で自動削除されることがあります</strong>（iOS Safari は7日間未訪問で削除）。<br>
+      ① このページを<strong>ホーム画面に追加</strong>してそこから開く、② 時々<strong>書き出す</strong>でファイルを保存しておく、の2点で防げます。<br>
+      ※ ファイルを直接開いた場合と GitHub Pages のURLでは、保存先が別になります。常に同じURLから開いてください。
+    </p>
+  </div>
 </section>
 
 <!-- ===== LISTENING SCREEN ===== -->
@@ -1102,7 +1131,7 @@ function loadProgress(){
     var raw = localStorage.getItem(STORAGE_KEY);
     if(raw) return JSON.parse(raw);
   }catch(e){}
-  return { records:{}, streak:0, bestStreak:0 };
+  return { records:{}, streak:0, bestStreak:0, lastStudyAt:0, lastBackupAt:0 };
 }
 function saveProgress(){
   try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(progress)); }catch(e){}
@@ -1123,6 +1152,7 @@ function recordAnswer(qid, isCorrect){
   } else {
     progress.streak = 0;
   }
+  progress.lastStudyAt = Date.now();
   saveProgress();
 }
 
@@ -1139,6 +1169,150 @@ function isWrongLast(qid){
   var r = progress.records[qid];
   if(!r || r.history.length===0) return false;
   return r.history[r.history.length-1] === false;
+}
+
+/* ============ BACKUP / RESTORE ============ */
+var BACKUP_APP_ID = 'ryoko_kanrisha_quiz';
+var LISTEN_RATE_KEY = 'ryokogyo_listen_rate';
+
+function fmtDateShort(ts){
+  if(!ts) return '';
+  var d = new Date(ts);
+  return (d.getMonth()+1) + '/' + d.getDate();
+}
+function fmtDateCompact(d){
+  function p(n){ return (n<10?'0':'') + n; }
+  return d.getFullYear() + p(d.getMonth()+1) + p(d.getDate());
+}
+
+function buildBackup(){
+  var session = null;
+  try{
+    var raw = localStorage.getItem(QUIZ_SESSION_KEY);
+    if(raw) session = JSON.parse(raw);
+  }catch(e){}
+  var rate = null;
+  try{ rate = localStorage.getItem(LISTEN_RATE_KEY); }catch(e){}
+  return {
+    app: BACKUP_APP_ID,
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    progress: progress,
+    session: session,
+    listenRate: rate
+  };
+}
+
+function exportBackup(){
+  var text = JSON.stringify(buildBackup());
+  var a = document.getElementById('backupDownloadAnchor');
+  var url = '';
+  var revoke = false;
+  try{
+    var blob = new Blob([text], {type:'application/json'});
+    url = URL.createObjectURL(blob);
+    revoke = true;
+  }catch(e){
+    url = 'data:application/json;charset=utf-8,' + encodeURIComponent(text);
+  }
+  a.href = url;
+  a.download = 'ryoko_backup_' + fmtDateCompact(new Date()) + '.json';
+  a.click();
+  if(revoke){
+    setTimeout(function(){ try{ URL.revokeObjectURL(url); }catch(e){} }, 5000);
+  }
+  progress.lastBackupAt = Date.now();
+  saveProgress();
+  renderBackupInfo();
+  showToast('バックアップを書き出しました');
+}
+
+function applyBackup(data){
+  var src = data.progress || {};
+  progress = {
+    records: (src.records && typeof src.records === 'object') ? src.records : {},
+    streak: src.streak || 0,
+    bestStreak: src.bestStreak || 0,
+    lastStudyAt: src.lastStudyAt || 0,
+    lastBackupAt: src.lastBackupAt || 0
+  };
+  saveProgress();
+  try{
+    if(data.session) localStorage.setItem(QUIZ_SESSION_KEY, JSON.stringify(data.session));
+    else localStorage.removeItem(QUIZ_SESSION_KEY);
+  }catch(e){}
+  if(data.listenRate){
+    try{ localStorage.setItem(LISTEN_RATE_KEY, String(data.listenRate)); }catch(e){}
+  }
+  renderHome();
+}
+
+function importBackupText(text){
+  var data;
+  try{ data = JSON.parse(String(text)); }
+  catch(e){ showToast('ファイルを読み込めませんでした'); return; }
+  if(!data || data.app !== BACKUP_APP_ID || !data.progress ||
+     typeof data.progress.records !== 'object' || data.progress.records === null){
+    showToast('このアプリのバックアップではありません');
+    return;
+  }
+  var n = Object.keys(data.progress.records).length;
+  var when = data.exportedAt ? String(data.exportedAt).slice(0, 10).replace(/-/g, '/') : '日付不明';
+  var nowN = Object.keys(progress.records || {}).length;
+  showConfirm(
+    when + ' のバックアップ（' + n + '問ぶんの記録）を復元します。\n' +
+    '現在の記録（' + nowN + '問ぶん）は上書きされます。よろしいですか？',
+    function(){
+      applyBackup(data);
+      showToast('復元しました（' + n + '問）');
+    }
+  );
+}
+
+function importBackupFile(file){
+  if(!file) return;
+  var reader = new FileReader();
+  reader.onload = function(){ importBackupText(reader.result); };
+  reader.onerror = function(){ showToast('ファイルを読み込めませんでした'); };
+  reader.readAsText(file);
+}
+
+function renderBackupInfo(){
+  var el = document.getElementById('backupInfo');
+  if(!el) return;
+  var n = Object.keys(progress.records || {}).length;
+  var parts = ['記録済み <strong>' + n + '</strong> 問'];
+  if(progress.lastStudyAt) parts.push('最終学習 ' + fmtDateShort(progress.lastStudyAt));
+  parts.push(progress.lastBackupAt
+    ? '最終バックアップ ' + fmtDateShort(progress.lastBackupAt)
+    : '<strong>バックアップ未実施</strong>');
+  el.innerHTML = parts.join('　/　');
+
+  var warn = document.getElementById('backupStorageWarn');
+  if(!warn) return;
+  var msgs = [];
+  if(n >= 20 && !progress.lastBackupAt){
+    msgs.push('記録がたまってきました。一度「書き出す」を押して控えを保存しておくことをおすすめします。');
+  } else if(progress.lastBackupAt && (Date.now() - progress.lastBackupAt) > 14*24*3600*1000){
+    msgs.push('前回のバックアップから2週間以上経っています。');
+  }
+  if(msgs.length){
+    warn.style.display = 'block';
+    warn.textContent = '⚠ ' + msgs.join(' ');
+  } else {
+    warn.style.display = 'none';
+  }
+}
+
+/* 可能なブラウザでは保存領域の自動削除を抗う */
+function requestPersistentStorage(){
+  try{
+    if(navigator.storage && navigator.storage.persist && navigator.storage.persisted){
+      navigator.storage.persisted().then(function(already){
+        if(!already) return navigator.storage.persist();
+      }).catch(function(){});
+    }
+  }catch(e){}
 }
 
 /* ============ UTIL ============ */
@@ -2027,6 +2201,7 @@ function renderResumeBanner(){
 
 function renderHome(){
   renderResumeBanner();
+  renderBackupInfo();
 
   var st = overallStats(homeYear);
   document.getElementById('homeTotalAnswered').textContent = st.totalSeen;
@@ -3467,9 +3642,20 @@ document.querySelectorAll('.section-tabbar .section-tab[data-s]').forEach(functi
   });
 });
 
+document.getElementById('backupExport').addEventListener('click', exportBackup);
+document.getElementById('backupImport').addEventListener('click', function(){
+  var inp = document.getElementById('backupFileInput');
+  inp.value = '';
+  inp.click();
+});
+document.getElementById('backupFileInput').addEventListener('change', function(ev){
+  var f = ev.target.files && ev.target.files[0];
+  importBackupFile(f);
+});
+
 document.getElementById('resetBtn').addEventListener('click', function(){
   showConfirm('すべての学習記録をリセットします。よろしいですか？', function(){
-    progress = { records:{}, streak:0, bestStreak:0 };
+    progress = { records:{}, streak:0, bestStreak:0, lastStudyAt:0, lastBackupAt:0 };
     saveProgress();
     renderHome();
     showToast('リセットしました');
@@ -3477,6 +3663,7 @@ document.getElementById('resetBtn').addEventListener('click', function(){
 });
 
 /* ============ INIT ============ */
+requestPersistentStorage();
 initCustomPractice();
 initOxSelector();
 initMarkerFeature();
