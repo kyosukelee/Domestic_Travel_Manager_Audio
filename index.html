@@ -322,6 +322,10 @@ main{max-width:680px;margin:0 auto;padding:14px;}
   font-size:12.5px;font-weight:700;color:var(--navy);text-align:center;
   background:#e7f1ff;border-radius:8px;padding:7px 10px;margin:0 0 10px;
 }
+.mock-time-note{
+  font-size:11.5px;color:var(--ink-soft);line-height:1.6;margin:8px 0 10px;
+}
+.mock-time-note strong{color:var(--navy);}
 .rs-note{font-size:11px;color:var(--ink-soft);line-height:1.65;margin:8px 0 0;}
 
 /* ===== バックアップ ===== */
@@ -812,10 +816,11 @@ h3.subtitle{font-size:13px;color:var(--ink-soft);margin:18px 0 8px;font-weight:7
 
   <div class="section-block">
     <h2>📝 模試モード</h2>
-    <p style="font-size:12.5px;color:var(--ink-soft);margin:0 0 10px;">本番CBTと同じ方式です。<strong>制限時間120分</strong>で全問を通して解き、最後にまとめて採点します（途中で正誤は表示されません）。問題の見直し・解答の変更・見直しフラグが使えます。</p>
-    <div class="btn-row" id="mockButtonsRow">
-      <button class="btn btn-amber" id="startMockAll">通し模試</button>
-    </div>
+    <p style="font-size:12.5px;color:var(--ink-soft);margin:0 0 10px;">本番CBTと同じ方式です。制限時間内に全問を通して解き、最後にまとめて採点します（途中で正誤は表示されません）。問題の見直し・解答の変更・見直しフラグが使えます。</p>
+    <div style="font-size:12px;color:var(--ink-soft);margin-bottom:4px;">出題範囲</div>
+    <div class="chip-grid" id="mockScopeRow"></div>
+    <p class="mock-time-note" id="mockTimeNote"></p>
+    <div class="btn-row" id="mockButtonsRow"></div>
   </div>
 
   <div class="section-block">
@@ -1407,7 +1412,17 @@ var quiz = {
 };
 
 /* ============ MOCK EXAM (本番CBT方式) ============ */
-var MOCK_TIME_LIMIT_SEC = 120 * 60;   // 全科目 120分
+/* 本番の制限時間：全科目120分／2科目免除なしの一部受験80分／1科目40分。
+   1科目あたり40分で按分すると公式の区分と一致する。 */
+var MOCK_MIN_PER_SECTION = 40;
+var MOCK_TIME_LIMIT_SEC = 120 * 60;   // 直近に開始した模試の制限時間（秒）
+
+function mockLimitSecFor(list){
+  var secs = {};
+  list.forEach(function(q){ secs[q.section] = true; });
+  var n = Object.keys(secs).length || 3;
+  return n * MOCK_MIN_PER_SECTION * 60;
+}
 var MOCK_WARN_SEC = 10 * 60;          // 残り10分で警告
 var mockTimerId = null;
 
@@ -1561,6 +1576,7 @@ function resumeQuizSession(){
   quiz.timeUp = false;
   quiz.endAt = 0;
   if(quiz.mode === 'mock'){
+    MOCK_TIME_LIMIT_SEC = mockLimitSecFor(quiz.list);
     var rem = session.remainSec;
     quiz.remainSec = (typeof rem === 'number' && rem > 0) ? rem : MOCK_TIME_LIMIT_SEC;
   } else {
@@ -1599,7 +1615,12 @@ function startQuizNow(list, mode){
   quiz.warned = false;
   quiz.timeUp = false;
   quiz.endAt = 0;
-  quiz.remainSec = isMock() ? MOCK_TIME_LIMIT_SEC : 0;
+  if(isMock()){
+    MOCK_TIME_LIMIT_SEC = mockLimitSecFor(quiz.list);
+    quiz.remainSec = MOCK_TIME_LIMIT_SEC;
+  } else {
+    quiz.remainSec = 0;
+  }
   showScreen('quiz');
   renderQuestion();
   saveQuizSession();
@@ -1997,7 +2018,7 @@ function finishQuiz(){
     if(quiz.records[i] && quiz.records[i].correct){ a.c++; a.got += p; }
   });
   var secKeys = Object.keys(secAgg).map(Number).sort(function(a,b){ return a-b; });
-  var showSectionBreakdown = mock && secKeys.length > 1;
+  var showSectionBreakdown = mock && secKeys.length >= 1;
 
   var secBlock = document.getElementById('resultSectionBlock');
   if(showSectionBreakdown){
@@ -2037,10 +2058,14 @@ function finishQuiz(){
                          .map(function(s){ return SECTION_SHORT[s] || ''; });
     if(ngNames.length === 0){
       passBadge.className = 'result-pass pass';
-      passBadge.textContent = '合格圏（全科目 60点以上）';
+      passBadge.textContent = (secKeys.length > 1)
+        ? '合格圏（全科目 60点以上）'
+        : '基準クリア（' + (SECTION_SHORT[secKeys[0]] || '') + ' 60点以上）';
     } else {
       passBadge.className = 'result-pass fail';
-      passBadge.textContent = '不合格圏：' + ngNames.join('・') + ' が60点未満';
+      passBadge.textContent = (secKeys.length > 1)
+        ? '不合格圏：' + ngNames.join('・') + ' が60点未満'
+        : '基準未達：' + ngNames.join('・') + ' が60点未満';
     }
   } else {
     var ratio = total ? (correctCount / total) : 0;
@@ -2227,29 +2252,64 @@ function renderHome(){
   document.getElementById('homeAccuracy').textContent = st.totalSeen>0 ? Math.round(st.totalCorrect/st.totalSeen*100)+'%' : '–';
   document.getElementById('homeStreak').textContent = progress.streak||0;
 
-  // mock button row
+  renderMockBlock();
+}
+
+/* ============ 模試の出題範囲（全科目／科目別） ============ */
+var mockScope = 'all';   // 'all' | 1 | 2 | 3
+
+function mockListFor(year, scope){
+  var list = questionsOfYear(year);
+  if(scope === 'all') return list;
+  return list.filter(function(q){ return q.section === scope; });
+}
+
+function renderMockBlock(){
+  var scopeRow = document.getElementById('mockScopeRow');
   var mockRow = document.getElementById('mockButtonsRow');
-  mockRow.innerHTML = '';
-  if(homeYear==='all'){
-    YEARS.forEach(function(y){
-      var btn = document.createElement('button');
-      btn.className = 'btn btn-amber';
-      btn.textContent = YEAR_LABEL[y] + ' 通し模試';
-      btn.addEventListener('click', function(){
-        startQuiz(questionsOfYear(y), 'mock');
-      });
-      mockRow.appendChild(btn);
+  var note = document.getElementById('mockTimeNote');
+  if(!scopeRow || !mockRow) return;
+
+  var OPTIONS = [
+    {key:'all', label:'全科目'},
+    {key:1,     label:SECTION_SHORT[1]},
+    {key:2,     label:SECTION_SHORT[2]},
+    {key:3,     label:SECTION_SHORT[3]}
+  ];
+  scopeRow.innerHTML = '';
+  OPTIONS.forEach(function(o){
+    var c = document.createElement('button');
+    c.className = 'chip' + (mockScope === o.key ? ' active' : '');
+    c.textContent = o.label;
+    c.addEventListener('click', function(){
+      mockScope = o.key;
+      renderMockBlock();
     });
-  } else {
+    scopeRow.appendChild(c);
+  });
+
+  var nSec = (mockScope === 'all') ? 3 : 1;
+  var minutes = nSec * MOCK_MIN_PER_SECTION;
+  note.innerHTML = (mockScope === 'all')
+    ? '全科目を通して解きます。制限時間 <strong>' + minutes + '分</strong>（本番と同じ）。'
+    : SECTION_SHORT[mockScope] + 'だけを本番方式で解きます。制限時間 <strong>' + minutes +
+      '分</strong>（本番の1科目あたりの持ち時間）。採点は<strong>この科目の60点判定</strong>で表示します。';
+
+  mockRow.innerHTML = '';
+  var years = (homeYear === 'all') ? YEARS : [homeYear];
+  years.forEach(function(y){
+    var list = mockListFor(y, mockScope);
+    if(list.length === 0) return;
     var btn = document.createElement('button');
     btn.className = 'btn btn-amber';
-    var yQs = questionsOfYear(homeYear);
-    btn.textContent = YEAR_LABEL[homeYear] + ' 通し模試（' + yQs.length + '問）';
+    btn.textContent = YEAR_LABEL[y] +
+      (mockScope === 'all' ? ' 通し模試' : ' ' + SECTION_SHORT[mockScope]) +
+      '（' + list.length + '問）';
     btn.addEventListener('click', function(){
-      startQuiz(questionsOfYear(homeYear), 'mock');
+      startQuiz(mockListFor(y, mockScope), 'mock');
     });
     mockRow.appendChild(btn);
-  }
+  });
 }
 
 /* ============ CUSTOM PRACTICE (cross-year × cross-section) ============ */
