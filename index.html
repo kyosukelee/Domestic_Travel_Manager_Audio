@@ -322,6 +322,42 @@ main{max-width:680px;margin:0 auto;padding:14px;}
   font-size:12.5px;font-weight:700;color:var(--navy);text-align:center;
   background:#e7f1ff;border-radius:8px;padding:7px 10px;margin:0 0 10px;
 }
+#historyOverlay{
+  position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;
+  align-items:flex-end;justify-content:center;z-index:120;
+}
+#historyOverlay.show{display:flex;}
+.hist-sheet{
+  background:var(--card);width:100%;max-width:520px;border-radius:16px 16px 0 0;
+  padding:16px 16px 20px;max-height:82vh;overflow:auto;
+  box-shadow:0 -4px 24px rgba(0,0,0,.2);
+}
+.hist-head{font-size:12px;color:var(--ink-soft);margin-bottom:2px;}
+.hist-title{font-size:14px;font-weight:700;color:var(--navy);margin-bottom:8px;line-height:1.5;}
+.hist-sum{
+  display:flex;gap:8px;margin-bottom:12px;
+}
+.hist-sum .box{
+  flex:1;background:#f1f3f5;border-radius:10px;padding:8px 6px;text-align:center;
+}
+.hist-sum .box .n{font-size:16px;font-weight:800;color:var(--navy);}
+.hist-sum .box .l{font-size:10.5px;color:var(--ink-soft);margin-top:2px;}
+.hist-row{
+  display:flex;align-items:center;gap:9px;padding:8px 4px;
+  border-bottom:1px solid var(--line);font-size:12.5px;
+}
+.hist-row:last-child{border-bottom:none;}
+.hist-row .d{color:var(--ink-soft);width:78px;flex-shrink:0;font-variant-numeric:tabular-nums;}
+.hist-row .ic{width:18px;flex-shrink:0;text-align:center;}
+.hist-row .pick{font-weight:700;}
+.hist-row .pick.ng{color:var(--bad);}
+.hist-row .pick.ok{color:var(--good);}
+.hist-row .memo{color:var(--ink-soft);font-size:11.5px;}
+.hist-empty{font-size:12px;color:var(--ink-soft);padding:10px 4px;line-height:1.7;}
+.hist-legacy{
+  font-size:11.5px;color:var(--ink-soft);background:#f1f3f5;border-radius:8px;
+  padding:8px 10px;margin-top:8px;line-height:1.6;
+}
 .mock-time-note{
   font-size:11.5px;color:var(--ink-soft);line-height:1.6;margin:8px 0 10px;
 }
@@ -1087,6 +1123,7 @@ h3.subtitle{font-size:13px;color:var(--ink-soft);margin:18px 0 8px;font-weight:7
       <span style="color:var(--bad);">■</span>苦手　
       <span style="color:#6c757d;">■</span>未回答
     </p>
+    <p style="font-size:11.5px;color:var(--ink-soft);margin:0 0 6px;">番号をタップすると、その問題の解答履歴（いつ・何を選んで・正解したか）が開きます。</p>
     <div class="mastery-grid" id="masteryGrid"></div>
   </div>
   <div class="section-block">
@@ -1100,6 +1137,19 @@ h3.subtitle{font-size:13px;color:var(--ink-soft);margin:18px 0 8px;font-weight:7
 <div class="bottom-nav">
   <div class="nav-item active" data-screen="home"><span class="ic">🏠</span>ホーム</div>
   <div class="nav-item" data-screen="mastery"><span class="ic">🗺️</span>習熟度</div>
+</div>
+
+<div id="historyOverlay">
+  <div class="hist-sheet">
+    <div class="hist-head" id="histHead"></div>
+    <div class="hist-title" id="histTitle"></div>
+    <div class="hist-sum" id="histSum"></div>
+    <div id="histList"></div>
+    <div class="btn-row" style="margin-top:14px;">
+      <button class="btn btn-ghost" id="histClose">閉じる</button>
+      <button class="btn btn-primary" id="histSolve">この問題を解く</button>
+    </div>
+  </div>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -1149,13 +1199,25 @@ function saveProgress(){
 }
 var progress = loadProgress();
 
-function recordAnswer(qid, isCorrect){
+/* 1問あたりに残す解答履歴の件数 */
+var ATTEMPT_KEEP = 10;
+
+function recordAnswer(qid, isCorrect, chosen){
   if(!progress.records[qid]) progress.records[qid] = {seen:0, correct:0, history:[]};
   var r = progress.records[qid];
   r.seen++;
   if(isCorrect) r.correct++;
   r.history.push(isCorrect);
   if(r.history.length > 5) r.history.shift();
+
+  /* いつ・何を選んで・正解したか（t=日時, c=正誤, a=選んだ選択肢） */
+  if(!r.log) r.log = [];
+  r.log.push({
+    t: Date.now(),
+    c: !!isCorrect,
+    a: (chosen && chosen.length) ? chosen.join('・') : ''
+  });
+  if(r.log.length > ATTEMPT_KEEP) r.log = r.log.slice(-ATTEMPT_KEEP);
 
   if(isCorrect){
     progress.streak = (progress.streak||0) + 1;
@@ -1894,7 +1956,7 @@ function submitAnswer(){
   var correct = arraysEqualAsSets(quiz.selected, q.answer);
   quiz.answered = true;
 
-  recordAnswer(q.id, correct);
+  recordAnswer(q.id, correct, quiz.selected);
   quiz.records[quiz.index] = {qid:q.id, correct:correct, chosen:quiz.selected.slice(), skipped:false};
 
   lockQuestion(quiz.selected, correct);
@@ -1966,7 +2028,7 @@ function gradeMock(force){
       var chosen = mockAnswerOf(i);
       var correct = chosen.length > 0 && arraysEqualAsSets(chosen, q.answer);
       quiz.records[i] = {qid:q.id, correct:correct, chosen:chosen.slice(), skipped:(chosen.length === 0)};
-      recordAnswer(q.id, correct);
+      recordAnswer(q.id, correct, chosen);
     });
     finishQuiz();
   }
@@ -2167,6 +2229,16 @@ function buildReviewDetail(q, a){
     ex.textContent = '\uD83D\uDCA1 ' + q.explanation;
     det.appendChild(ex);
   }
+
+  var hb = document.createElement('button');
+  hb.className = 'btn btn-ghost';
+  hb.style.marginTop = '10px';
+  hb.textContent = '\uD83D\uDCC5 この問題の解答履歴';
+  hb.addEventListener('click', function(ev){
+    ev.stopPropagation();
+    openHistory(q.id);
+  });
+  det.appendChild(hb);
   return det;
 }
 
@@ -2310,6 +2382,91 @@ function renderMockBlock(){
     });
     mockRow.appendChild(btn);
   });
+}
+
+/* ============ 問題ごとの解答履歴 ============ */
+var histQid = null;
+
+function fmtStamp(ts){
+  var d = new Date(ts), now = new Date();
+  function p(n){ return (n<10?'0':'')+n; }
+  var md = (d.getMonth()+1) + '/' + d.getDate();
+  var hm = p(d.getHours()) + ':' + p(d.getMinutes());
+  var sameDay = d.toDateString() === now.toDateString();
+  var y = new Date(now.getTime() - 86400000);
+  if(sameDay) return '今日 ' + hm;
+  if(d.toDateString() === y.toDateString()) return '昨日 ' + hm;
+  return md + ' ' + hm;
+}
+
+function openHistory(qid){
+  var q = byId(qid);
+  if(!q) return;
+  histQid = qid;
+  var r = (progress.records || {})[qid] || {seen:0, correct:0, history:[], log:[]};
+  var log = (r.log || []).slice().reverse();
+
+  document.getElementById('histHead').textContent =
+    (YEAR_LABEL[q.year] || '') + '　' + (SECTION_SHORT[q.section] || '') + '　問' + q.number;
+  document.getElementById('histTitle').textContent =
+    q.question.split('\n')[0].slice(0, 70) + (q.question.split('\n')[0].length > 70 ? '…' : '');
+
+  var acc = r.seen > 0 ? Math.round(r.correct / r.seen * 100) + '%' : '–';
+  document.getElementById('histSum').innerHTML =
+    '<div class="box"><div class="n">' + (r.seen||0) + '</div><div class="l">解答回数</div></div>' +
+    '<div class="box"><div class="n">' + (r.correct||0) + '</div><div class="l">正解</div></div>' +
+    '<div class="box"><div class="n">' + acc + '</div><div class="l">正答率</div></div>' +
+    '<div class="box"><div class="n">' + (q.answer.join('・')) + '</div><div class="l">正解</div></div>';
+
+  var list = document.getElementById('histList');
+  list.innerHTML = '';
+  if(log.length === 0){
+    var e = document.createElement('div');
+    e.className = 'hist-empty';
+    e.textContent = (r.seen > 0)
+      ? 'この問題の解答日時は記録されていません。日時つきの履歴は、この機能を入れて以降に解いたぶんから残ります。'
+      : 'まだ解いていません。';
+    list.appendChild(e);
+  } else {
+    log.forEach(function(a){
+      var row = document.createElement('div');
+      row.className = 'hist-row';
+      var pickCls = a.c ? 'ok' : 'ng';
+      var pick = a.a ? '<span class="pick ' + pickCls + '">' + a.a + '</span>' : '<span class="memo">未解答</span>';
+      var memo = (!a.c && a.a) ? '<span class="memo">正解は ' + q.answer.join('・') + '</span>' : '';
+      row.innerHTML =
+        '<span class="d">' + fmtStamp(a.t) + '</span>' +
+        '<span class="ic">' + (a.c ? '\u2705' : '\u274c') + '</span>' +
+        pick + ' ' + memo;
+      list.appendChild(row);
+    });
+    /* 同じ選択肢を繰り返し選んで間違えているときは目立たせる */
+    var wrong = {};
+    log.forEach(function(a){ if(!a.c && a.a) wrong[a.a] = (wrong[a.a]||0) + 1; });
+    var rep2 = Object.keys(wrong).filter(function(k){ return wrong[k] >= 2; });
+    if(rep2.length){
+      var w = document.createElement('div');
+      w.className = 'hist-legacy';
+      w.innerHTML = '\u26a0 <strong>' + rep2.join('・') + '</strong> を繰り返し選んでいます。' +
+                    'その選択肢がなぜ誤りかを解説で確認してください。';
+      list.appendChild(w);
+    }
+  }
+
+  if(r.seen > 0 && (!r.log || r.log.length === 0) && r.history && r.history.length){
+    var lg = document.createElement('div');
+    lg.className = 'hist-legacy';
+    lg.textContent = '直近の正誤（日時なし）：' +
+      r.history.map(function(x){ return x ? '\u25cb' : '\u00d7'; }).join(' ');
+    list.appendChild(lg);
+  }
+
+  document.getElementById('historyOverlay').classList.add('show');
+}
+
+function closeHistory(){
+  document.getElementById('historyOverlay').classList.remove('show');
+  histQid = null;
 }
 
 /* ============ CUSTOM PRACTICE (cross-year × cross-section) ============ */
@@ -2491,7 +2648,7 @@ function renderMasteryGrid(sec, year){
     cell.textContent = q.number;
     cell.title = q.question.slice(0,40);
     cell.addEventListener('click', function(){
-      startQuiz([q], 'single');
+      openHistory(q.id);
     });
     grid.appendChild(cell);
   });
@@ -3733,6 +3890,17 @@ document.querySelectorAll('.section-tabbar .section-tab[data-s]').forEach(functi
     masteryActiveSection = parseInt(t.dataset.s,10);
     renderMasteryGrid(masteryActiveSection, masteryActiveYear);
   });
+});
+
+document.getElementById('histClose').addEventListener('click', closeHistory);
+document.getElementById('historyOverlay').addEventListener('click', function(ev){
+  if(ev.target === this) closeHistory();
+});
+document.getElementById('histSolve').addEventListener('click', function(){
+  var qid = histQid;
+  closeHistory();
+  var q = byId(qid);
+  if(q) startQuiz([q], 'single');
 });
 
 document.getElementById('backupExport').addEventListener('click', exportBackup);
